@@ -1,5 +1,5 @@
 from django.conf.urls import url
-from .views import *
+from ruleManage.views import *
 
 urlpatterns = [
     url(r'^list/', rule_list, name='regular_list'), #规则列表

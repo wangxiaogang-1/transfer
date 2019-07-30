@@ -226,6 +226,7 @@ def estimate_actual_compare(num, interval):
     month_count = []
     # 这里的最后一个参数是间隔
     for i in show_start_end(yesterday, now, interval)[1:]:
+        print(i, 'iii')
         count_dict = {}
         tasks = list(Task.objects.filter(Q(status=3) & Q(start_time__lte=i) & Q(start_time__gte=i - timedelta(days=1))). \
                      values('estimate_count', 'actual_count'))
@@ -263,4 +264,10 @@ def get_rule_id():
 
 
 
+if __name__ == '__main__':
 
+    i = "20190729000000"
+    # tasks = list(Task.objects.filter(Q(status=3) & Q(start_time__gte="2019-07-29 00:00:00")).values('estimate_count', 'actual_count'))
+    tasks = list(Task.objects.filter(Q(status=3) & Q(start_time__lte=i) & Q(start_time__gte=i - timedelta(days=1))). \
+                 values('estimate_count', 'actual_count'))
+    print(tasks, 'tasks')

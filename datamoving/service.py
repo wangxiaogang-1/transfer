@@ -11,6 +11,8 @@ from environment.con_oracle import oracle_connect
 from datamoving.public_params import *
 from datamoving.loop_time import *
 from django.db import connection
+import gc
+
 os.environ['NLS_LANG'] = 'SIMPLIFIED CHINESE_CHINA.UTF8'
 
 """
@@ -25,10 +27,14 @@ def my_print(args, log):
     :param log: log对象
     :return: None
     """
-    logg.info(args)
-    content = '%s%s\n' % (log.content, str(args))
-    log.content = content
-    log.save()
+    logg.info("任务名称:{},任务ID:{} {}".format(log.task.task_name, str(log.task_id), args))
+
+    path = '%slog_%s' % (LOG_PATH(), str(log.id))
+    with open(path, 'a+') as f:
+        f.writelines(str(args) + "\n")
+    log.path = path
+    log.save(update_fields=['path'])
+
 
 
 def get_sh_path(rule_id):
@@ -111,7 +117,7 @@ def check_connecting(source, target, task, log):
     '''根据写死的条件进行查询信息'''
     # 根据查询条件获取主子表的全部数据量
 
-    #my_print('创建linux连接成功', log)
+    # my_print('创建linux连接成功', log)
     conn = create_conn(LINUX_IP(), LINUX_USER(), LINUX_PASS())
     if not conn:
         my_print('linux ip 账号或密码错误', log)
@@ -120,7 +126,6 @@ def check_connecting(source, target, task, log):
     #     my_print('当前时间不符合系统规定执行时间', log)
     #     raise Exception('当前时间不符合系统规定执行时间')
     return conn, conn_curs, curs, t_conn_curs, t_curs
-
 
 
 def result_status(args, task, log, global_dict):
@@ -155,6 +160,7 @@ def result_status(args, task, log, global_dict):
         task.status = 2
         task.end_time = datetime.now()
         task.total_time = task.end_time.timestamp() - task.start_time.timestamp()
+        task.extend1 = 'error'
         task.save()
         if global_dict:
             global_dict['conn'].close()
@@ -176,6 +182,7 @@ def execute_task(task, man_f=False):
     log = Log.objects.get(task_id=task.id)
     init_task(task, log)
     my_print('1.初始化迁移任务', log)
+    my_print("临时表名为：transfer_" + str(task.rule_id), log)
     sh_path, tables, table_names, source, target = get_rule_source_target(task, log)
     # 获取规则,数据源,目标源
     my_print('2.开始获取规则脚本路径,表名,目标源,数据源信息', log)
@@ -188,15 +195,6 @@ def execute_task(task, man_f=False):
                    'target': target, 'conn': conn, 'conn_curs': conn_curs, 'curs': curs, 't_conn_curs': t_conn_curs,
                    't_curs': t_curs, 'commit_count': task.commit_count, 'total_count': task.total_count, 'task': task}
     try:
-        # table_info = select_main_children(**global_dict) if not task.run_step else json.loads(task.estimate_count)
-        # if global_dict['total_count'] is None or global_dict['total_count'] == 0:
-        #     print('总数量为空，迁移所有数据')
-        #     task.total_count = sum(list(table_info.values()))
-        #     task.save()
-        # my_print('4.获取本次执行各表的数据总量:', log)
-        # my_print(table_info, log)
-        # task.estimate_count = json.dumps(table_info)
-        # task.save()
         my_print('4.开始执行数据迁移任务：', log)
         '''数据源,目标源,commit条数，涉及的表,所有的id,机器的连接'''
         if get_rule_use_csr(task.rule_id):
@@ -204,9 +202,6 @@ def execute_task(task, man_f=False):
             execute_dmp_imp(man_f, **global_dict)
             task.sum_commit = task.sum_delete
             task.save()
-        else:
-            # 执行不用临时表  基本被舍弃
-            without_tmp_table(man_f, **global_dict)
 
         my_print('5.本次迁移任务全部执行成功！', log)
         result_status('success', task, log, global_dict)
@@ -225,36 +220,6 @@ def get_rule_use_csr(rule_id: object) -> object:
     :return: 是否使用临时表(1:使用,0:未使用)
     """
     return int(Regulation.objects.get(id=rule_id).use_csr)
-
-
-def copy_timing(first_task):
-    """
-    定时器根据首个定时任务创建新任务
-    :param first_task: 任务信息
-    :return: None
-    """
-    new_task = Task.objects.filter(task_name__icontains=first_task['task_name']).last().task_name
-    num = new_task.split('_')[-1]
-    if num.isdigit():
-        count = int(num) + 1
-        new_name = first_task['task_name'].split('_')[0] + "_" + str(count)
-    else:
-        count = Task.objects.filter(task_name=first_task['task_name']).count()
-        new_name = first_task['task_name'] + "_" + str(count)
-    one = datetime.strptime(first_task['start_time'], '%Y-%m-%dT%H:%M:%S') if type(
-        first_task['start_time']) == str else \
-        first_task['start_time']
-    two = datetime.strptime(first_task['final_time'], '%Y-%m-%dT%H:%M:%S') if type(
-        first_task['final_time']) == str else \
-        first_task['final_time']
-    interval = (two.timestamp() - one.timestamp()) / 3600
-    first_task['task_name'] = new_name
-    first_task['start_time'] = datetime.now()
-    first_task['final_time'] = first_task['start_time'] + timedelta(hours=interval)
-    if 'id' in first_task.keys():
-        del first_task['id']
-    task = Task.objects.create(**first_task)
-    Log.objects.create(task=task)
 
 
 def get_table_info(rule_id):
@@ -287,11 +252,16 @@ def mini_curs(condition, curs):
     :return: 返回游标
     """
     # 去掉sql中不必要的分号
-    if ';' in condition:
-        condition = condition.replace(';', '')
-    curs.prepare(condition)
-    curs.execute(None)
-    return curs
+    try:
+        if ';' in condition:
+            condition = condition.replace(';', '')
+        curs.prepare(condition)
+        curs.execute(None)
+        return curs
+    except Exception as e:
+
+        raise Exception(str(condition)+'\r\n'+str(e))
+
 
 
 def select_main_children(**global_dict):
@@ -384,19 +354,21 @@ def insert_temp_table(create_sql, total_count, conn_curs, log, curs):
                     return "break"
                     # raise Exception("主表数据查询结果为空")
                 logg.info('开始向临时表插入数据,当前插入条数%s' % str(total_count))
-                # my_print('开始向临时表插入数据,当前插入条数%s' % str(commit_count), log)
+                my_print('开始向主表临时表插入数据,当前插入条数%s' % str(total_count), log)
     except Exception as e:
         raise e
 
+
 def insert_subtemp_table(create_subsql, conn_curs, log, curs):
     """向子表临时表插入子表数据"""
+    my_print('开始向子表临时表插入数据', log)
     for i in create_subsql:
         if 'insert' in i:
             curs = mini_curs(i, curs)
             conn_curs.commit()
             if curs.rowcount == 0:
                 logg.info('WARNING:子表数据查询结果为空')
-                my_print('WARNING:子表数据查询结果为空', log)
+            # my_print('WARNING:子表数据查询结果为空', log)
             logg.info('开始向子表临时表插入数据')
 
 
@@ -450,24 +422,25 @@ def insert_target_db(insert_sql, commit_count, tables, insert_info, select_count
             if values.__len__() == 0:
                 if tables[0] == tables[i]:
                     select_count[tables[i]] = 0
-                    #my_print("当前表为:%s 查询数量为:%s" % (tables[i], '0'), log)
+                    # my_print("当前表为:%s 查询数量为:%s" % (tables[i], '0'), log)
                     insert_info[tables[i]] = 0
-                    #my_print("当前表为:%s 迁移数量为:%s" % (tables[i], '0'), log)
+                    # my_print("当前表为:%s 迁移数量为:%s" % (tables[i], '0'), log)
                     return 'break'
                 select_count[tables[i]] = 0
-                #my_print("当前表为:%s 查询数量为:%s" % (tables[i], '0'), log)
+                # my_print("当前表为:%s 查询数量为:%s" % (tables[i], '0'), log)
                 insert_info[tables[i]] = 0
-                #my_print("当前表为:%s 迁移数量为:%s" % (tables[i], '0'), log)
+                # my_print("当前表为:%s 迁移数量为:%s" % (tables[i], '0'), log)
                 continue
             else:
                 select_count[tables[i]] = curs.rowcount
-                #my_print("当前表为:%s 查询数量为:%s" % (tables[i], curs.rowcount), log)
+                # my_print("当前表为:%s 查询数量为:%s" % (tables[i], curs.rowcount), log)
                 # 查询总量和迁移总量对比,对比后再进行删除
                 sql = "insert into %s values(%s)" % (tables[i], p_field)
+
                 t_curs.prepare(sql)
                 t_curs.executemany(None, values)
                 insert_info[tables[i]] = t_curs.rowcount
-                #my_print("当前表为:%s 迁移数量为:%s" % (tables[i], t_curs.rowcount), log)
+                # my_print("当前表为:%s 迁移数量为:%s" % (tables[i], t_curs.rowcount), log)
     t_conn_curs.commit()
     my_print("目标表数据迁移成功！", log)
     acutal_count = add_acutal_count(insert_info, 'insert', task)
@@ -505,8 +478,8 @@ def delete_source_db(delete_sql, select_count, insert_info, delete_info, tables,
         my_print(delete_count, log)
         task.delete_count = json.dumps(delete_count)
         task.sum_delete = sum(delete_count.values())
-        #task.actual_count = delete_count
-        #task.sum_commit = task.sum_delete
+        # task.actual_count = delete_count
+        # task.sum_commit = task.sum_delete
         task.save()
     else:
         my_print("ERROR:查询数量与迁移数量不一致", log)
@@ -534,6 +507,7 @@ def delete_temp_table(drop_sql, curs, task, log):
         logg.info('ERROR: 临时表删除失败！！')
         raise e
 
+
 def execute_dmp_imp(man_f, **global_dict):
     """
     执行数据迁移方法
@@ -542,7 +516,7 @@ def execute_dmp_imp(man_f, **global_dict):
     :return:
     """
     source = global_dict['source']
-    commit_count = global_dict['commit_count']  #每次commit笔数
+    commit_count = global_dict['commit_count']  # 每次commit笔数
     table_names = global_dict['table_names']
     tables = global_dict['tables']
     conn = global_dict['conn']
@@ -573,39 +547,70 @@ def execute_dmp_imp(man_f, **global_dict):
     delete_info = {}
     select_count = {}
     reversed_name = reversed_tables(tables)
+    create_subsql = None
     # 判断是否为回滚任务
-    if task.task_type == 1 and task.rollback_condition is not None:
+    if task.task_type == 1 and task.rollback_condition:
+
         print('回滚')
         create_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
-                                total_count, '1', sh_path, RB_CONDITION=task.rollback_condition, totalcount=total_count,)
+                                 total_count, '1', sh_path, RB_CONDITION=task.rollback_condition,
+                                 totalcount=total_count)
+
+        if table_names.split(',').__len__() > 1:
+            create_subsql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
+                                        total_count, '8', sh_path, totalcount=total_count, RB_CONDITION=task.rollback_condition,
+                                        subTemTableName='transfer_sub' + str(task.rule_id))
     else:
         print('不回滚')
-        #需求需要创建的临时表名为transfer_ruleId
+        # 需求需要创建的临时表名为transfer_ruleId
         create_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
-                                total_count, '1', sh_path, totalcount=total_count)
-        create_subsql =execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
-                                total_count, '8', sh_path, totalcount=total_count, subTemTableName='transfer_sub' + str(task.rule_id))
-    #使用actual_count值，一次性向临时表插入所有要迁移的数据量
-    insert_sql = execute_sh(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'], commit_count, '2', sh_path)
-    #delete_sql  删除时，每次迁移量（commit_count）迁移完后删除
-    delete_sql = execute_sh(conn, reversed_name, 'transfer_' + str(task.rule_id), source['db_username'], commit_count, '3', sh_path)
-    #drop_sql 执行清空临时表的操作
-    drop_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
-                                total_count, '4', sh_path, totalcount=total_count, subTemTableName='transfer_sub' + str(task.rule_id), )
-    save_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'], commit_count, '5', sh_path,
-                          'Y', 'TRANSFER_LOG', get_rule_name(task.rule_id), task.id, subTemTableName='transfer_sub' + str(task.rule_id))
-    #从临时表获取commit_count的id内容，根据获取的id内容，去源库中查找对应的数据内容
-    #在临时表中将已经迁移的数据状态改为1
-    update_sql = execute_sh1(conn, table_names,  'transfer_' + str(task.rule_id), source['db_username'], commit_count, '7', sh_path)
+                                 total_count, '1', sh_path, totalcount=total_count)
+        # 有子表的话
+        if table_names.split(',').__len__() > 1:
+            create_subsql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
+                                        total_count, '8', sh_path, totalcount=total_count,
+                                        subTemTableName='transfer_sub' + str(task.rule_id))
+    # 使用actual_count值，一次性向临时表插入所有要迁移的数据量
+    insert_sql = execute_sh(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'], commit_count,
+                            '2', sh_path)
+    # delete_sql  删除时，每次迁移量（commit_count）迁移完后删除
+    delete_sql = execute_sh(conn, reversed_name, 'transfer_' + str(task.rule_id), source['db_username'], commit_count,
+                            '3', sh_path)
+    # drop_sql 执行清空临时表的操作
+    if create_subsql:
+        drop_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
+                               total_count, '4', sh_path, totalcount=total_count,
+                               subTemTableName='transfer_sub' + str(task.rule_id), )
+        save_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'], commit_count,
+                               '5', sh_path,
+                               'Y', 'TRANSFER_LOG', get_rule_name(task.rule_id), task.id,
+                               subTemTableName='transfer_sub' + str(task.rule_id))
+    else:
+        drop_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'],
+                               total_count, '4', sh_path, totalcount=total_count,
+                               subTemTableName=None)
+        save_sql = execute_sh2(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'], commit_count,
+                               '5', sh_path,
+                               'Y', 'TRANSFER_LOG', get_rule_name(task.rule_id), task.id,
+                               subTemTableName=None)
+    # 从临时表获取commit_count的id内容，根据获取的id内容，去源库中查找对应的数据内容
+    # 在临时表中将已经迁移的数据状态改为1
+    update_sql = execute_sh1(conn, table_names, 'transfer_' + str(task.rule_id), source['db_username'], commit_count,
+                             '7', sh_path)
     FLAG = 0 if not task.run_step else task.run_step
     count = 1 if not task.step else task.step
     task_status = 0 if not None else 1
+    # 执行失败 修改total值
     c = 0
+
+    print(FLAG, '失败后的flag值！！！')
     # 这里不知道为什么获取不到FALG的真实数值,因为存在循环中?
     # 记录每次执行的step,出错后可以根据出错位置继续执行
     try:
         while True:
-            if not man_f:  #man_f是false  进if
+            s = 0
+            if not man_f:  # man_f是false  进if
+                print(FLAG, '每次循环FLAG的值！！！')
                 if datetime.now() >= final_time:
                     my_print('WARNING:当前时间不符合系统规定执行时间', log)
                     raise Exception('当前时间不符合系统规定执行时间')
@@ -614,112 +619,142 @@ def execute_dmp_imp(man_f, **global_dict):
                 my_print("####################################", log)
                 my_print('########当前数据迁移次数为:%s########' % count, log)
                 my_print("####################################", log)
-            else:
-                break
-            if FLAG == 6 or FLAG == 8:
+
+            # 6向目标库插入
+            # 8从源库删除
+            # 2向临时表插入失败
+            if task.extend1:
+                # if FLAG != 4:
                 try:
+                    # 判断临时表
                     delete_temp_info(drop_sql, curs, conn_curs)
-                    insertflag_result = select_temp_insertflag_status('transfer_' + str(task.rule_id), curs, conn_curs)
-                    deleteflag_result = select_temp_deleteflag_status('transfer_' + str(task.rule_id), curs, conn_curs)
-                    if insertflag_result == '0' and deleteflag_result != '0':
-                        task_status = 2
-                        task_get_next_time(task)
-                        print('FLAG = 7000')
-                        FLAG = 7
-                    elif insertflag_result != '0' and deleteflag_result != '0' and insertflag_result == deleteflag_result:
-                        task.actual_count = None
-                        task.save()
-                        task_status = 2
-                        task_get_next_time(task)
-                        print('FLAG = 5')
-                        FLAG = 5
-                    elif insertflag_result != '0' and deleteflag_result != '0' and insertflag_result != deleteflag_result:
-                        task_status = 2
-                        task_get_next_time(task)
-                        print('FLAG = 7')
-                        FLAG = 7
-                    else:
-                        FLAG = 1
+                    FLAG, task_status = judge_temp_status(task, 'transfer_' + str(task.rule_id), curs, conn_curs, FLAG)
                 except Exception as err:
-                    print('临时表不存在:' + err)
-                    FLAG = 1
-            if FLAG < 2:
+                    # 捕获临时表已经存在从0开始
+                    FLAG = 0
+            if FLAG < 1:
                 # 创建临时表
                 try:
                     create_temp_talbe(create_sql, task, log, curs)
-                    FLAG = 2
+                    FLAG = 1
                 except Exception as err:
-                    print('临时表已存在，不需要创建', err)
-            if FLAG < 3:
+                    delete_temp_info(drop_sql, curs, conn_curs)
+                    FLAG, task_status = judge_temp_status(task, 'transfer_' + str(task.rule_id), curs, conn_curs, FLAG)
+                    print(FLAG, '删除完临时表后，查看临时表内是否有数据  0无数据  不是0有数据')
+                    if FLAG != 0 and not task.extend1:
+                        result_count = select_count_temp('transfer_' + str(task.rule_id), curs, conn_curs)
+                        my_print("##################", log)
+                        my_print('先执行上一个任务遗留的数据！！！', log)
+                        my_print("##################", log)
+                        s += 1
+                        # if task_status == 0:
+                        # if task_status == 0 or task_status == 2 and int(total_count) >= int(result_count):
+                        #     task.total_count = int(result_count)
+                        #     task.save(update_fields=['total_count'])
+            if FLAG < 2:
                 # 向临时表插入数据(total_count)
+                my_print("##################", log)
+                my_print('开始执行本次任务的数据迁移！！！', log)
+                my_print("##################", log)
+                total_count = int(task.total_count)
+                task.actual_count = None
+                task.delete_count = None
+                task.save()
                 result = insert_temp_table(create_sql, total_count, conn_curs, log, curs)
-                FLAG = 3
                 if result == 'break':
                     break
                 result_count = select_count_temp('transfer_' + str(task.rule_id), curs, conn_curs)
                 if int(total_count) > int(result_count):
-                    total_count = int(result_count)
-            if FLAG < 4:
-                #创建子表临时表, 创建子表临时表的触发器
+                    task.total_count = int(result_count)
+                    task.save(update_fields=['total_count'])
+                FLAG = 2
+            if FLAG < 3 and create_subsql != None:
+                # 创建子表临时表, 创建子表临时表的触发器
                 try:
                     create_subtemp_table(create_subsql, task, log, curs)
-                    FLAG = 4
+                    FLAG = 3
                 except Exception as err:
-                    print('子表临时表已存在，不需要创建', err)
-                    delete_temp_info(drop_sql, curs, conn_curs)
-            if FLAG < 5:
-                #迁移子表数据到子表临时表
-                print(create_subsql, 'create_subsql')
+                    delete_subtemp_info(drop_sql, curs, conn_curs)
+            if FLAG < 4 and create_subsql != None:
+                # 迁移子表数据到子表临时表
                 insert_subtemp_table(create_subsql, conn_curs, log, curs)
+                FLAG = 4
+
+            if FLAG < 5:
+                # 批量导入目标库
+                insert_target_db(insert_sql, commit_count, tables, insert_info, select_count, curs, t_curs,
+                                 t_conn_curs, task, log)
                 FLAG = 5
             if FLAG < 6:
-                #批量导入目标库
-                print(insert_sql, 'insert_sqlqq')
-                insert_target_db(insert_sql, commit_count, tables, insert_info, select_count, curs, t_curs,
-                                         t_conn_curs, task, log)
+                # (6)导入目标库轨迹记录，修改主临时表插入成功标志
+                execute_save_log_insert(save_sql, curs, count, log, conn_curs)
+                # 修改主表临时表插入成功的标志：1成功 0失败
+                update_temp_status(update_sql, task, curs, conn_curs)
                 FLAG = 6
             if FLAG < 7:
-                #(6)导入目标库轨迹记录，修改主临时表插入成功标志
-                print(save_sql, 'save_Sql')
-                execute_save_log_insert(save_sql, curs, count, log, conn_curs)
-                #修改主表临时表插入成功的标志：1成功 0失败
-                update_temp_status(update_sql, task, curs, conn_curs)
-                FLAG = 7
-            if FLAG < 8:
-                #(7)删除源库
-                print(delete_sql, 'delete_sql')
+                # (7)删除源库
                 delete_source_db(delete_sql, select_count, insert_info, delete_info, tables, conn_curs, task, log, curs)
                 t_conn_curs.commit()
-                FLAG = 8
-            if FLAG < 9:
+                FLAG = 7
+            total_count = task.total_count
+            if FLAG < 8:
                 result_count = select_count_temp('transfer_' + str(task.rule_id), curs, conn_curs)
-                if task_status == 2 and int(total_count) > int(result_count) and c == 0:
+                if task_status == 2 and int(total_count) >= int(result_count) and c == 0:
                     total_count = int(result_count)
+
                     c += 1
-                #(8)删 除源库轨迹记录，修改主临时表删除成功标志
+                # (8)删 除源库轨迹记录，修改主临时表删除成功标志
                 execute_save_log_delete(save_sql, curs, count, log, conn_curs)
                 # 修改主表临时表插入成功的标志：1成功 0失败
                 update_temp_status_delete(update_sql, task, curs, conn_curs)
-                FLAG = 5
-            # estimate_count = eval(task.estimate_count)
-            # e_list = list(estimate_count.values())
-            # if total_count > int(e_list[0]):
-            #     total_count = int(e_list[0])
+                FLAG = 4
             actual_count = eval(task.actual_count)
             v_list = list(actual_count.values())
-            if int(v_list[0]) == int(total_count):
-                #删除临时表内的数据
-                delete_temp_info(drop_sql, curs, conn_curs)
+            # 判断实际迁移和total_count是否一致
+            if int(v_list[0]) == int(total_count) and s == 0:
+                # 删除临时表内的数据
+                delete_subtemp_info(drop_sql, curs, conn_curs)
                 my_print('迁移数据量和需要迁移的总量一致', log)
                 break
+            elif s == 1:
+                FLAG = 0
             count += 1
-            if man_f:
-                break
     except Exception as e:
         task.run_step = FLAG
         task.step = count
         task.save()
         raise e
+
+
+def judge_temp_status(task, temp_table, curs, conn_curs, FLAG, task_status=0):
+    """判断临时表insertflag和deleteflag的状态值"""
+    # 获取临时表0或1的值
+    insertflag_result = select_temp_insertflag_status(temp_table, curs, conn_curs)
+    deleteflag_result = select_temp_deleteflag_status(temp_table, curs, conn_curs)
+    if insertflag_result == '0' and deleteflag_result != '0':
+        task_status = 2
+        task_get_next_time(task)
+        if task.extend1:
+            FLAG = FLAG
+        else:
+            FLAG = 6
+    elif insertflag_result != '0' and deleteflag_result != '0' and insertflag_result == deleteflag_result:
+        task_status = 2
+        task_get_next_time(task)
+        if task.extend1:
+            FLAG = FLAG
+        else:
+            FLAG = 4
+    elif insertflag_result != '0' and deleteflag_result != '0' and insertflag_result != deleteflag_result:
+        task_status = 2
+        task_get_next_time(task)
+        if task.extend1:
+            FLAG = FLAG
+        else:
+            FLAG = 6
+    else:
+        FLAG = 0
+    return FLAG, task_status
 
 
 def select_count_temp(temp, curs, conn_curs):
@@ -736,6 +771,7 @@ def select_count_temp(temp, curs, conn_curs):
                 limit.append(str(result).index(i))
         r = str(result)[limit[0] + 1: limit[1]]
     return r
+
 
 def task_get_next_time(task):
     """执行失败的任务，将该任务的结束时间向后推迟1天的凌晨3点"""
@@ -767,6 +803,7 @@ def select_temp_insertflag_status(tempable, curs, conn_curs):
         r = str(result)[limit[0] + 1: limit[1]]
     return r
 
+
 def select_temp_deleteflag_status(tempable, curs, conn_curs):
     """"""
     sql_delete = "SELECT count(*) FROM %s where %s.DELETEFLAG = 0" % (tempable, tempable)
@@ -783,6 +820,7 @@ def select_temp_deleteflag_status(tempable, curs, conn_curs):
         r = str(result)[limit[0] + 1: limit[1]]
     return r
 
+
 def create_subtemp_table(create_subsql, task, log, curs):
     """创建子临时表"""
     for i in create_subsql:
@@ -794,11 +832,26 @@ def create_subtemp_table(create_subsql, task, log, curs):
             else:
                 logg.info('ERROR: 创建子表临时表失败！')
 
+
 def delete_temp_info(drop_sql, curs, conn_curs):
     """如果主表临时表的两个状态都是1，执行删除内容操作"""
+    # for i in drop_sql:
+
+    if len(drop_sql) == 1:
+        flag = drop_sql[0]
+    else:
+        flag = drop_sql[1]
+    mini_curs(flag, curs)
+    conn_curs.commit()
+
+
+def delete_subtemp_info(drop_sql, curs, conn_curs):
+    """如果主表临时表的两个状态都是1，执行删除内容操作"""
+
     for i in drop_sql:
         mini_curs(i, curs)
         conn_curs.commit()
+
 
 def update_temp_status(update_sql, task, curs, conn_curs):
     """
@@ -809,6 +862,7 @@ def update_temp_status(update_sql, task, curs, conn_curs):
     # my_print("创建临时表：%s" % 'no' + str(task.id), log)
     mini_curs(update_sql[0], curs)
     conn_curs.commit()
+
 
 def update_temp_status_delete(update_sql, task, curs, conn_curs):
     """
@@ -833,27 +887,29 @@ def execute_save_log_delete(save_sql, curs, count, log, conn_curs):
     """
     if count == 1:
         for sql in save_sql:
-            if 'create table' in sql:
+            if 'createtable' in sql.lower().replace(' ', ''):
                 try:
                     curs = mini_curs(sql, curs)
                 except Exception as e:
                     if '名称已由现有对象使用' in str(e):
-                        my_print('日志记录表已存在,无需进行创建!', log)
+                        # my_print('日志记录表已存在,无需进行创建!', log)
+                        logg.info('日志记录表已存在,无需进行创建!')
                         continue
-            elif 'sequence' in sql:
+            elif 'sequence' in sql.lower().replace(' ', ''):
                 try:
                     curs = mini_curs(sql, curs)
                     print('SEQUENCE创建成功')
                 except Exception as e:
                     if '名称已由现有对象使用' in str(e):
-                        my_print('SEQUENCE已存在,无需进行创建!', log)
+                        # my_print('SEQUENCE已存在,无需进行创建!', log)
+                        logg.info('SEQUENCE已存在,无需进行创建!')
                         continue
-            elif 'insert into' in sql and 'delete' in sql:
+            elif 'insertinto' in sql.lower().replace(' ', '') and "'delete'" in sql:
                 curs = mini_curs(sql, curs)
                 conn_curs.commit()
     else:
         for sql in save_sql:
-            if 'insert into' in sql and 'delete' in sql:
+            if 'insertinto' in sql.lower().replace(' ', '') and "'delete'" in sql:
                 curs = mini_curs(sql, curs)
                 conn_curs.commit()
 
@@ -869,15 +925,16 @@ def execute_save_log_insert(save_sql, curs, count, log, conn_curs):
     :return:
     """
     if count == 1:
+        print(save_sql, 'save_sql')
         for sql in save_sql:
-            if 'create table' in sql:
+            if 'createtable' in sql.lower().replace(' ', ''):
                 try:
                     curs = mini_curs(sql, curs)
                 except Exception as e:
                     if '名称已由现有对象使用' in str(e):
                         my_print('日志记录表已存在,无需进行创建!', log)
                         continue
-            elif 'sequence' in sql:
+            elif 'sequence' in sql.lower().replace(' ', ''):
                 try:
                     curs = mini_curs(sql, curs)
                     print('SEQUENCE创建成功')
@@ -885,12 +942,14 @@ def execute_save_log_insert(save_sql, curs, count, log, conn_curs):
                     if '名称已由现有对象使用' in str(e):
                         my_print('SEQUENCE已存在,无需进行创建!', log)
                         continue
-            elif 'insert into' in sql and "'insert' from" in sql:
+            # elif 'insert into' in sql and "'insert' from" in sql:
+            elif 'insertinto' in sql.lower().replace(' ', '') and "'insert'from" in sql.lower().replace(' ', ''):
                 curs = mini_curs(sql, curs)
                 conn_curs.commit()
     else:
         for sql in save_sql:
-            if 'insert into' in sql and "'insert' from" in sql:
+            # if 'insert into' in sql.lower().replace(' ', '') and "'insert' from" in sql:
+            if 'insertinto' in sql.lower().replace(' ', '') and "'insert'from" in sql.lower().replace(' ', ''):
                 curs = mini_curs(sql, curs)
                 conn_curs.commit()
 
@@ -933,7 +992,6 @@ def without_tmp_table(man_f, **global_dict):
     insert_info = {}
     delete_info = {}
     select_count = {}
-    # fenmu = math.ceil(total_commit / commit_count)
     reversed_name = reversed_tables(tables)
 
     insert_sql = execute_sh(conn, table_names, 'no' + str(task.id), source['db_username'], commit_count, '2', sh_path,
@@ -1145,7 +1203,7 @@ def execute_sh(conn, table_names, tmptablename, dbuser, commitnum,
 
 
 def execute_sh1(conn, table_names, tmptablename, dbuser, commitnum,
-               type_num, sh_path, if_use="Y"):
+                type_num, sh_path, if_use="Y"):
     """
     执行规则sh脚本获取相关的sql语句
     :param conn: 机器连接
@@ -1175,7 +1233,7 @@ def execute_sh1(conn, table_names, tmptablename, dbuser, commitnum,
 
 
 def execute_sh3(conn, table_names, tmptablename, dbuser, commitnum,
-               type_num, sh_path, if_use="Y", subTemTableName=None):
+                type_num, sh_path, if_use="Y", subTemTableName=None):
     """
     执行规则sh脚本获取清空临时表的操作   暂时没用到
     :param conn: 机器连接
@@ -1208,10 +1266,9 @@ def execute_sh3(conn, table_names, tmptablename, dbuser, commitnum,
     return sql_list
 
 
-
-
 def execute_sh2(conn, table_names, tmptablename, dbuser, commitnum,
-                type_num, sh_path, if_use="Y", if_recode='N', rule_name='N', task_id='N', RB_CONDITION='None', totalcount=0,
+                type_num, sh_path, if_use="Y", if_recode='N', rule_name='N', task_id='N', RB_CONDITION='None',
+                totalcount=0,
                 subTemTableName=' '):
     """
     执行规则sh脚本获取相关的sql语句
@@ -1244,7 +1301,6 @@ def execute_sh2(conn, table_names, tmptablename, dbuser, commitnum,
     for sql in result[limit[0] + 1:limit[1]]:
         sql_list.append(sql.strip())
     return sql_list
-
 
 
 def execute_sh_two(conn, table_names, tmptablename, dbuser, commitnum,
@@ -1320,15 +1376,10 @@ def create_execute(first_task):
     :param first_task:
     :return:
     """
+    print('创建定时任务执行')
     django.db.close_old_connections()
-    new_task = Task.objects.filter(task_name__icontains=first_task['task_name']).last().task_name
-    num = new_task.split('_')[-1]
-    if num.isdigit():
-        count = int(num) + 1
-        new_name = first_task['task_name'].split('_')[0] + "_" + str(count)
-    else:
-        count = Task.objects.filter(task_name=first_task['task_name']).count()
-        new_name = first_task['task_name'] + "_" + str(count)
+    count = Task.objects.filter(task_name__icontains=first_task['task_name']).count()
+    new_name = first_task['task_name'] + "_" + str(count)
     one = datetime.strptime(first_task['start_time'], '%Y-%m-%dT%H:%M:%S') if type(
         first_task['start_time']) == str else \
         first_task['start_time']
@@ -1344,7 +1395,26 @@ def create_execute(first_task):
         del first_task['id']
     task = Task.objects.create(**first_task)
     Log.objects.create(task=task)
-    execute_task(Task.objects.get(id=task.id))
+    r = execute_task_yesOrNo(task)
+    if r == 1:
+        logg.info('任务失败了，请先去处理！！')
+        print('任务失败了，请先去处理！！')
+        tk = Task.objects.get(id=task.id)
+        tk.status = 2
+        tk.save(update_fields=['status'])
+    else:
+        print('任务执行成功')
+        execute_task(Task.objects.get(id=task.id))
+
+
+def execute_task_yesOrNo(task):
+    """判断相同那个定时规则创建的定时任务，是否有执行失败的任务，若有，不允许执行"""
+    name = Task.objects.get(id=task.id).task_name
+    name_num = name.split('_')
+    exist = Task.objects.filter(task_name__icontains=name_num[0])
+    for task in exist:
+        if task.status == 2:
+            return 1
 
 
 def get_max_values(conn, curs, table_names, source, sh_path):
@@ -1394,12 +1464,4 @@ def file_md5(filename):
 
 
 if __name__ == '__main__':
-    # result = {'success': 3,
-    #           '当前时间不符合系统规定执行时间': 3,
-    #           '主表数据查询结果为空': 3}
-    # a = '当前时间不符合系统规定执行时间'
-    # if a in list(result.keys()):
-    #     print(a)
     pass
-
-

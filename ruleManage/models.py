@@ -7,3 +7,6 @@ class Right(models.Model):
     describe = models.TextField(verbose_name='权限描述')
     key = models.CharField(verbose_name='key', max_length=64)
     group_set = models.ManyToManyField(Group, verbose_name='用户组')
+
+    class Meta:
+        db_table = ''

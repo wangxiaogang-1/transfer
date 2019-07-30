@@ -36,7 +36,7 @@ def cron_time(func, args, id, timi, start_time):
     timi = json.loads(timi) if type(timi) == str else timi
     print(start_time, 'starting')
     three = start_time.split('T')[1].split(':')
-    print(three)
+    print(three, 'three')
     if timi['type'] == 'day_of_week':
         if timi['type'] == '':
             timi['days'] = "*"
@@ -51,6 +51,7 @@ def cron_time(func, args, id, timi, start_time):
         add = scheduler.add_job(func, 'cron', args=(args,),
                                 day=timi['days'], month=timi['month'],
                                 id=str(id), hour=three[0], minute=three[1], second=three[2], misfire_grace_time=60)
+                                # id=str(id), hour="*", minute="*", misfire_grace_time=60)
         return add
 
 

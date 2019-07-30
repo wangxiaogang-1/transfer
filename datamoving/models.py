@@ -85,7 +85,7 @@ class Task(models.Model):
 class Log(models.Model):
     content = models.TextField(verbose_name='日志内容')
     task = models.ForeignKey(to=Task, verbose_name='任务外键', on_delete=models.CASCADE)
-
+    path = models.CharField(verbose_name='路径', max_length=100, default='')
     class Meta:
         # 定义model在数据库中的表名称
         db_table = "log"

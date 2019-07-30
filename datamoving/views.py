@@ -98,6 +98,7 @@ def task_detail(request):
     """作业详细信息
     ?id=1"""
     idi = request.GET.get('id')
+    print(idi, 'idi')
 
     # #创建新任务时，如果相同规则下有失败的任务，必须先将失败的任务处理完，才可以创建新任务
     # task = Task.objects.order_by('-id')[0]
@@ -144,12 +145,6 @@ def task_save(request):
     """添加作业"""
     print('task_save')
     dic = request.data
-    # #创建新任务时，如果相同规则下有失败的任务，必须先将失败的任务处理完，才可以创建新任务
-    # task = Task.objects.order_by('-id')[0]
-    # rule_id = Regulation.objects.get(id=dic['rule_id']).id
-    # if task.status == 2 and task.rule_id == rule_id:
-    #     print('不能创建')
-    #     return Response('本规则下有失败的任务，请先处理完再创建新的任务')
     if not dic['task_name']:
         return Response(ERROR)
     try:
@@ -166,8 +161,6 @@ def task_save(request):
     except django.db.utils.IntegrityError as err:
         return Response(EXIST)
     except Exception as err:
-        # raise err
-        print(err)
         return Response(ERROR)
     return Response(SUCCESS)
 
@@ -246,7 +239,9 @@ def task_log(request):
         task = Task.objects.only(*LogInit.Meta.fs).filter(id=id).first()
         task_data = LogInit(task)
         info['task'] = task_data.data
-        info['logs'] = Log.objects.get(task_id=id).content
+        with open(Log.objects.get(task_id=id).path, 'r') as f:
+            content = f.readlines()
+        info['logs'] = "".join([str(x) for x in content[-200:]])
     except Exception as err:
         raise err
     return Response(info)
@@ -268,6 +263,7 @@ def task_run(request):
             print("执行状态为执行中,无法进行执行")
             pass
         else:
+            print('开始执行')
             task = Task.objects.get(id=id)
             threading.Thread(target=execute_task, args=(task, man_f)).start()
     return Response('OK')
@@ -389,7 +385,6 @@ def get_next_count(request):
               (sh_path, sh_type('0'), table_names, 'no', source['db_username'], '0', 'N', 'N', 'N', 'N', max_id, 'N')
     '''
     # 有一个时间重复的问题，明天看
-
     for i in range(sql_list.__len__()):
         if tables[i] in sql_list[i]:
             # curs.prepare()
@@ -427,9 +422,32 @@ def hello_world(request):
 
 
 if __name__ == '__main__':
-    task = Task.objects.get(id=1221)
-    task.actual_count = None
-    task.save()
+    # task = Task.objects.get(id=1282)
+    # # c = Task.objects.filter(task_name__regex="^2_").values('task_name')
+    # # print(c)
+    # task_name = task.task_name
+    # new_name = task_name.split('_')[0]
+    # task_name = Task.objects.filter(task_name__regex="^"+new_name+'_').values('task_name')
+    # print(task_name)
+    # status = Task.objects.get(task_name=task_name).status
+    # print(status, 'status')
+    # for name in task_name:
+    #     for k, v in name.items():
+    #         print(v)
+    #         status = Task.objects.filter(task_name=v).order_by('-id')[0]
+    #         print(status, 'status')
+
+    # count = Task.objects.all().only(task_name).count()
+    #
+    # print(count, 'count')
+    # task = Task.objects.get(id=1258)
+    # print(task.run_step)
+    # print(datetime.now())
+    # task.start_time = datetime.now() if not task.run_step else datetime.now()
+    # task.save()
+    # print(task.start_time)
+    # task.actual_count = None
+    # task.save()
     # for k, v in actual_count.items():
     #     print(k, 'k')
     #     print(type(v), 'v')

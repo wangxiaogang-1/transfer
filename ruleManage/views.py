@@ -85,15 +85,18 @@ def rule_list(request):
 def rule_detail(request):
     """获取单个规则的详细信息"""
     rid = request.GET.get('id')
-
-    #创建新任务时，如果相同规则下有失败的任务，必须先将失败的任务处理完，才可以创建新任务
-    task = Task.objects.order_by('-id')[0]
-    rule_id = Regulation.objects.get(id=rid).id
+    #task_type=0归档  task_type=1回灌
+    task_type = request.GET.get('task_type')
     res = 1
-    if task.status == 2 and task.rule_id == rule_id:
-        print('不能创建')
-        res = 0
-
+    if task_type != None:
+    #创建新任务时，如果相同规则下有失败的任务，必须先将失败的任务处理完，才可以创建新任务,跟回灌任务不冲突
+        count = Task.objects.filter(task_type=task_type).count()
+        if count > 0:
+            task = Task.objects.filter(task_type=task_type).order_by('-id')[0]
+            rule_id = Regulation.objects.get(id=rid).id
+            if task.status == 2 and task.rule_id == rule_id and int(task.task_type) == int(task_type):
+                print('不能创建')
+                res = 0
     if not rid:
         return Response(status.HTTP_400_BAD_REQUEST)
     try:
@@ -206,6 +209,7 @@ def right_change(request):
 
 
 if __name__ == '__main__':
-
-
+    task = Task.objects.filter(rule_id=59)[-1]
+    print(task.task_name)
     pass
+

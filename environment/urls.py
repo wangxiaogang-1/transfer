@@ -1,6 +1,6 @@
 from django.conf.urls import url
-from .views import *
-
+# from .views import *
+from environment.views import *
 urlpatterns = [
     url(r'^list/', data_list, name='data_list'),  # 数据源列表
     url(r'^detail/', data_detail, name='data_detail'),  # 数据源详细信息

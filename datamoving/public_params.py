@@ -22,6 +22,10 @@ def LINUX_PASS():
 # 提出
 def PUBLIC_DIR():
     return get_sys_config('PUBLIC_DIR')
+
+# 获取日志路径
+def LOG_PATH():
+    return get_sys_config('LOG_PATH')
 # PUBLIC_DIR = 'C:/Users/Leon/Desktop/PUBLIC/'
 DATA_SOURCE = {"datasource_name":"数据源名称","ip":"数据源地址","username":"机器用户名","password":"机器密码","port":"数据库端口","db_username":"数据库用户名","db_password":"数据库密码","server_name":"服务名称"}
 

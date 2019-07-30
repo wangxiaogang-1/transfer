@@ -125,7 +125,7 @@ WSGI_APPLICATION = 'transfer.wsgi.application'
 #         'PORT': '1521',
 #     }
 # }
-
+#本机的mysql
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
@@ -136,9 +136,22 @@ DATABASES = {
         # 'HOST': '10.2.33.82',
         # 'HOST': 'localhost',
         'PORT': '3306',
-        'CONN_MAX_AGE': 1800,
+        'CONN_MAX_AGE': 60*60*7,
     }
 }
+
+#华泰生产机器的mysql
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'transfer',
+#         'USER': 'root',
+#         'PASSWORD': 'iIoO!123',
+#         'HOST': '10.1.9.40',
+#         'PORT': '3306',
+#         'CONN_MAX_AGE': 1800,
+#     }
+# }
 
 
 # Password validation
@@ -203,7 +216,8 @@ LOGGING = {
     'disable_existing_loggers': False,
     'formatters': {
         'jie': {
-            'format': '%(threadName)s_%(thread)d:{"date":"%(asctime)s","level":"%(levelname)s","path":"%(module)s.%(funcName)s:%(lineno)d","%(message)s"}',
+            # 'format': '%(threadName)s_%(thread)d:{"date":"%(asctime)s","level":"%(levelname)s","path":"%(module)s.%(funcName)s:%(lineno)d","%(message)s"}',
+            'format': '{"线程名":"%(threadName)s","date":"%(asctime)s","level":"%(levelname)s","path":"%(module)s.%(funcName)s:%(lineno)d","%(message)s"}',
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
         'simple': {
