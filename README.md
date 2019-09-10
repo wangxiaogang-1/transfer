@@ -10,3 +10,4 @@
   startup
   lsnrctl start
 2.Python3.6  Django1.11.6
+
